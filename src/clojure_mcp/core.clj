@@ -312,4 +312,154 @@
       (log/error e "Error during server shutdown")
       (throw e))))
 
+;; Connection Manager Integration Functions
+
+(defn create-connection-manager-from-config
+  "Creates a connection manager from a configuration.
+   
+   Handles both single-connection and multi-connection configurations.
+   Returns a map containing the connection manager and primary client atom.
+   
+   For backward compatibility:
+   - Single-connection configs create a manager with one connection
+   - Multi-connection configs create a manager with all specified connections
+   - Shadow configs preserve existing Shadow integration patterns
+   
+   Returns: {:connection-manager <manager> :primary-client-atom <atom>}"
+  [config]
+  (log/info "Creating connection manager from config")
+  (require '[clojure-mcp.connection-manager :as conn-mgr])
+  (require '[clojure-mcp.config :as config])
+  
+  (let [normalized-config (config/parse-multi-connection-config config)
+        primary-config (config/get-primary-connection-config normalized-config)
+        additional-configs (config/get-additional-connections-config normalized-config)]
+    
+    (log/info "Primary connection config:" primary-config)
+    (log/info "Additional connections:" (keys additional-configs))
+    
+    ;; Create primary connection using existing function
+    (let [primary-client-map (create-and-start-nrepl-connection primary-config)
+          primary-client-atom (atom primary-client-map)
+          
+          ;; Create connection manager with primary connection
+          connection-manager (conn-mgr/create-connection-manager primary-client-map)]
+      
+      ;; Add additional connections if any
+      (let [final-manager 
+            (reduce (fn [manager [port conn-config]]
+                      (log/info "Adding additional connection on port:" port)
+                      (conn-mgr/add-connection-to-manager 
+                       manager 
+                       primary-client-atom 
+                       conn-config))
+                    connection-manager
+                    additional-configs)]
+        
+        (log/info "Connection manager created with" 
+                  (count (:connections final-manager)) "connections")
+        
+        {:connection-manager final-manager
+         :primary-client-atom primary-client-atom
+         :normalized-config normalized-config}))))
+
+(defn close-servers-with-connection-manager
+  "Enhanced version of close-servers that handles connection managers.
+   
+   This function handles shutdown for both legacy single-connection
+   and new multi-connection setups.
+   
+   Takes either:
+   - nrepl-client-atom (legacy format)
+   - {:connection-manager <manager> :primary-client-atom <atom>} (new format)"
+  [server-state]
+  (log/info "Shutting down servers with connection manager support")
+  (try
+    (cond
+      ;; New connection manager format
+      (and (map? server-state) (:connection-manager server-state))
+      (let [{:keys [connection-manager primary-client-atom]} server-state]
+        (log/info "Shutting down connection manager with" 
+                  (count (get connection-manager :connections)) "connections")
+        
+        ;; Close all additional connections first
+        (doseq [[port connection] (:connections connection-manager)]
+          (when (and (not= port (:default-port connection-manager))
+                     (= :connected (:status connection)))
+            (log/info "Stopping additional connection on port:" port)
+            (try
+              (nrepl/stop-polling (:client-map connection))
+              (catch Exception e
+                (log/warn e "Error stopping additional connection on port:" port)))))
+        
+        ;; Close primary connection and MCP server
+        (when-let [primary-client @primary-client-atom]
+          (log/info "Stopping primary nREPL polling")
+          (nrepl/stop-polling primary-client)
+          (when-let [mcp-server (:mcp-server primary-client)]
+            (log/info "Closing MCP server gracefully")
+            (.closeGracefully mcp-server)))
+        
+        (log/info "Connection manager shutdown completed"))
+      
+      ;; Legacy single-connection format (atom)
+      (instance? clojure.lang.Atom server-state)
+      (do
+        (log/info "Using legacy shutdown process")
+        (close-servers server-state))
+      
+      :else
+      (throw (ex-info "Invalid server state format" {:server-state server-state})))
+    
+    (catch Exception e
+      (log/error e "Error during server shutdown")
+      (throw e))))
+
+(defn get-connection-for-tool
+  "Gets the appropriate connection for a tool.
+   
+   Supports both legacy single-connection and new multi-connection setups.
+   
+   Parameters:
+   - server-state: Either nrepl-client-atom (legacy) or connection manager state
+   - tool-connection-spec: Optional connection specification
+     - nil: use default connection
+     - integer: use connection on specific port
+     - :clojure/:cljs/etc: use connection of specific type
+   
+   Returns the nrepl-client-map to use for the tool."
+  [server-state tool-connection-spec]
+  (cond
+    ;; Legacy single-connection format
+    (instance? clojure.lang.Atom server-state)
+    (do
+      (when tool-connection-spec
+        (log/warn "Tool connection specification ignored in legacy mode:" tool-connection-spec))
+      @server-state)
+    
+    ;; New connection manager format
+    (and (map? server-state) (:connection-manager server-state))
+    (let [{:keys [connection-manager]} server-state]
+      (require '[clojure-mcp.connection-manager :as conn-mgr])
+      (cond
+        ;; No specification - use default
+        (nil? tool-connection-spec)
+        (conn-mgr/get-default-connection connection-manager)
+        
+        ;; Port number specification
+        (integer? tool-connection-spec)
+        (conn-mgr/get-connection-by-port connection-manager tool-connection-spec)
+        
+        ;; Type specification
+        (keyword? tool-connection-spec)
+        (conn-mgr/get-connection-by-type connection-manager tool-connection-spec)
+        
+        :else
+        (do
+          (log/warn "Invalid tool connection specification:" tool-connection-spec)
+          (conn-mgr/get-default-connection connection-manager))))
+    
+    :else
+    (throw (ex-info "Invalid server state format" {:server-state server-state}))))
+
 
