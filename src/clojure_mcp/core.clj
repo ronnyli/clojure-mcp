@@ -4,7 +4,9 @@
             [clojure.java.io :as io]
             [clojure.tools.logging :as log]
             [clojure-mcp.nrepl :as nrepl]
-            [clojure-mcp.config :as config])
+            [clojure-mcp.config :as config]
+            [clojure-mcp.connection-manager :as conn-mgr])
+  
   (:import [io.modelcontextprotocol.server.transport
             StdioServerTransportProvider]
            [io.modelcontextprotocol.server McpServer McpServerFeatures
@@ -328,9 +330,6 @@
    Returns: {:connection-manager <manager> :primary-client-atom <atom>}"
   [config]
   (log/info "Creating connection manager from config")
-  (require '[clojure-mcp.connection-manager :as conn-mgr])
-  (require '[clojure-mcp.config :as config])
-  
   (let [normalized-config (config/parse-multi-connection-config config)
         primary-config (config/get-primary-connection-config normalized-config)
         additional-configs (config/get-additional-connections-config normalized-config)]
@@ -352,7 +351,8 @@
                       (conn-mgr/add-connection-to-manager 
                        manager 
                        primary-client-atom 
-                       conn-config))
+                       conn-config
+                       create-additional-connection))
                     connection-manager
                     additional-configs)]
         
@@ -440,7 +440,6 @@
     ;; New connection manager format
     (and (map? server-state) (:connection-manager server-state))
     (let [{:keys [connection-manager]} server-state]
-      (require '[clojure-mcp.connection-manager :as conn-mgr])
       (cond
         ;; No specification - use default
         (nil? tool-connection-spec)
@@ -461,5 +460,70 @@
     
     :else
     (throw (ex-info "Invalid server state format" {:server-state server-state}))))
+
+(defn create-connection-aware-tool
+  "Enhanced version of create-async-tool that supports connection specifications.
+   
+   Takes a map with the following keys:
+    :name                - The name of the tool
+    :description         - A description of what the tool does
+    :schema              - JSON schema for the tool's input parameters
+    :tool-fn             - Function that implements the tool's logic.
+                           Signature: (fn [exchange args-map clj-result-k] ... )
+    :connection-port     - Optional: specific port number to use
+    :connection-type     - Optional: connection type (:clojure, :cljs, etc.)
+    :server-state        - Server state (either nrepl-client-atom or connection manager)
+   
+   The tool-fn will receive the appropriate nrepl-client-map based on the connection specification."
+  [{:keys [name description schema tool-fn connection-port connection-type server-state] :as tool-spec}]
+  
+  (let [connection-spec (or connection-port connection-type)
+        enhanced-tool-fn (fn [exchange args-map clj-result-k]
+                          (try
+                            (let [nrepl-client-map (get-connection-for-tool server-state connection-spec)]
+                              (if nrepl-client-map
+                                ;; Call the original tool function with the appropriate connection
+                                (tool-fn exchange args-map clj-result-k nrepl-client-map)
+                                ;; Handle case where connection is not available
+                                (clj-result-k [(str "Connection not available - "
+                                                   (if connection-spec
+                                                     (str "specified: " connection-spec)
+                                                     "default connection"))] true)))
+                            (catch Exception e
+                              (log/error e "Error in connection-aware tool:" name)
+                              (clj-result-k [(str "Tool error: " (.getMessage e))] true))))]
+    
+    ;; Create the tool using the existing create-async-tool function
+    (create-async-tool (assoc tool-spec
+                             :tool-fn enhanced-tool-fn))))
+
+(defn add-connection-aware-tool
+  "Helper function to create a connection-aware tool and add it to the server.
+   
+   Takes an MCP server and a tool specification map with:
+    :name                - The name of the tool
+    :description         - A description of what the tool does  
+    :schema              - JSON schema for the tool's input parameters
+    :tool-fn             - Function that implements the tool's logic
+    :connection-port     - Optional: specific port number to use
+    :connection-type     - Optional: connection type (:clojure, :cljs, etc.)
+    :server-state        - Server state (either nrepl-client-atom or connection manager)"
+  [mcp-server tool-spec]
+  (.removeTool mcp-server (:name tool-spec))
+  (-> (.addTool mcp-server (create-connection-aware-tool tool-spec))
+      (.subscribe)))
+
+;; Backward compatibility wrapper that works with both legacy and new formats
+(defn add-tool-with-connection-support
+  "Enhanced version of add-tool that supports both legacy and connection-aware tools.
+   
+   If tool-map contains :connection-port or :connection-type, creates a connection-aware tool.
+   Otherwise, uses the existing legacy behavior."
+  [mcp-server tool-map server-state]
+  (if (or (:connection-port tool-map) (:connection-type tool-map))
+    ;; New connection-aware tool
+    (add-connection-aware-tool mcp-server (assoc tool-map :server-state server-state))
+    ;; Legacy tool - use existing add-tool
+    (add-tool mcp-server tool-map)))
 
 
