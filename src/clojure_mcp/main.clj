@@ -110,56 +110,116 @@
   [server-state]
   [;; Legacy tools (backward compatible - work with either legacy or connection manager)
    (directory-tree-tool/directory-tree-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (unified-read-file-tool/unified-read-file-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (new-grep-tool/grep-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (glob-files-tool/glob-files-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (think-tool/think-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
 
    ;; Standard eval tool (uses default connection)
    (eval-tool/eval-code 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    
    ;; Multi-connection eval tool (only available with connection manager)
-   (when (map? server-state)
-     (eval-tool/multi-connection-eval-tool server-state))
+   (eval-tool/multi-connection-eval-tool server-state)
 
    ;; bash tool
    (bash-tool/bash-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
 
    ;; editing tools
    (combined-edit-tool/unified-form-edit-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (new-form-edit-tool/sexp-replace-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (file-edit-tool/file-edit-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (file-write-tool/file-write-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
 
    ;; introspection
    (project-tool/inspect-project-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    
    ;; Agents (read only)
    (dispatch-agent-tool/dispatch-agent-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (architect-tool/architect-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    (code-critique-tool/code-critique-tool 
-    (if (map? server-state) (:primary-client-atom server-state) server-state))
+    server-state)
    
    ;; Connection management tools (only available with connection manager)
-   (when (map? server-state)
-     (connection-manager-tool/get-connection-manager-tools server-state))])
+   (connection-manager-tool/get-connection-manager-tools server-state)])
 
 ;; not sure if this is even needed
 (def nrepl-client-atom (atom nil))
+
+(defn start-mcp-server-legacy
+  "Legacy startup mode - preserves existing behavior exactly."
+  [nrepl-args]
+  (log/info "Starting MCP server in legacy single-connection mode")
+  (let [nrepl-client-map (core/create-and-start-nrepl-connection nrepl-args)
+        working-dir (config/get-nrepl-user-dir nrepl-client-map)
+        resources (my-resources nrepl-client-map working-dir)
+        _ (reset! nrepl-client-atom nrepl-client-map)
+        tools (my-tools nrepl-client-atom)
+        prompts (my-prompts working-dir)
+        mcp (core/mcp-server)]
+    (doseq [tool tools]
+      (core/add-tool mcp tool))
+    (doseq [resource resources]
+      (core/add-resource mcp resource))
+    (doseq [prompt prompts]
+      (core/add-prompt mcp prompt))
+    (swap! nrepl-client-atom assoc :mcp-server mcp)
+    (log/info "MCP server started successfully in legacy mode")
+    nil))
+
+(def nrepl-connection-manager-atom (atom nil))
+
+(defn start-mcp-server-with-connection-manager
+  "Enhanced startup mode with connection manager support."
+  [nrepl-args]
+  (log/info "Starting MCP server with connection manager")
+  (let [{:keys [connection-manager primary-client-atom normalized-config] :as server-state} 
+        (core/create-connection-manager-from-config nrepl-args)
+        _ (reset! nrepl-connection-manager-atom server-state)
+        
+        primary-client-map @primary-client-atom
+        working-dir (config/get-nrepl-user-dir primary-client-map)
+        resources (my-resources primary-client-map working-dir)
+        
+        ;; Use enhanced tools that support connection manager
+        tools (my-tools-with-connection-manager nrepl-connection-manager-atom)
+        prompts (my-prompts working-dir)
+        mcp (core/mcp-server)]
+    
+    (log/info "Adding" (count tools) "tools to MCP server")
+    (doseq [tool tools]
+      (if (map? tool)
+        ;; New-style tool with connection specifications
+        (core/add-tool-with-connection-support mcp tool nrepl-connection-manager-atom)
+        ;; Legacy-style tool
+        (core/add-tool mcp tool)))
+    
+    (doseq [resource resources]
+      (core/add-resource mcp resource))
+    
+    (doseq [prompt prompts]
+      (core/add-prompt mcp prompt))
+    
+    ;; Store server state for proper cleanup
+    (swap! primary-client-atom assoc :mcp-server mcp)
+    (reset! nrepl-client-atom server-state) ; For compatibility, though this changes the format
+    
+    (log/info "MCP server started successfully with connection manager")
+    (log/info "Available connections:" (keys (:connections connection-manager)))
+    nil))
 
 ;; Enhanced startup function that supports both legacy and multi-connection modes
 (defn start-mcp-server 
@@ -202,65 +262,6 @@
      (catch Exception e
        (log/error e "Failed to start MCP server")
        (throw e)))))
-
-(defn start-mcp-server-legacy
-  "Legacy startup mode - preserves existing behavior exactly."
-  [nrepl-args]
-  (log/info "Starting MCP server in legacy single-connection mode")
-  (let [nrepl-client-map (core/create-and-start-nrepl-connection nrepl-args)
-        working-dir (config/get-nrepl-user-dir nrepl-client-map)
-        resources (my-resources nrepl-client-map working-dir)
-        _ (reset! nrepl-client-atom nrepl-client-map)
-        tools (my-tools nrepl-client-atom)
-        prompts (my-prompts working-dir)
-        mcp (core/mcp-server)]
-    (doseq [tool tools]
-      (core/add-tool mcp tool))
-    (doseq [resource resources]
-      (core/add-resource mcp resource))
-    (doseq [prompt prompts]
-      (core/add-prompt mcp prompt))
-    (swap! nrepl-client-atom assoc :mcp-server mcp)
-    (log/info "MCP server started successfully in legacy mode")
-    nil))
-
-(defn start-mcp-server-with-connection-manager
-  "Enhanced startup mode with connection manager support."
-  [nrepl-args]
-  (log/info "Starting MCP server with connection manager")
-  (let [{:keys [connection-manager primary-client-atom normalized-config] :as server-state} 
-        (core/create-connection-manager-from-config nrepl-args)
-        
-        primary-client-map @primary-client-atom
-        working-dir (config/get-nrepl-user-dir primary-client-map)
-        resources (my-resources primary-client-map working-dir)
-        
-        ;; Use enhanced tools that support connection manager
-        tools (flatten (filter identity (my-tools-with-connection-manager server-state)))
-        prompts (my-prompts working-dir)
-        mcp (core/mcp-server)]
-    
-    (log/info "Adding" (count tools) "tools to MCP server")
-    (doseq [tool tools]
-      (if (map? tool)
-        ;; New-style tool with connection specifications
-        (core/add-tool-with-connection-support mcp tool server-state)
-        ;; Legacy-style tool
-        (core/add-tool mcp tool)))
-    
-    (doseq [resource resources]
-      (core/add-resource mcp resource))
-    
-    (doseq [prompt prompts]
-      (core/add-prompt mcp prompt))
-    
-    ;; Store server state for proper cleanup
-    (swap! primary-client-atom assoc :mcp-server mcp)
-    (reset! nrepl-client-atom server-state) ; For compatibility, though this changes the format
-    
-    (log/info "MCP server started successfully with connection manager")
-    (log/info "Available connections:" (keys (:connections connection-manager)))
-    nil))
 
 ;; -Djdk.attach.allowAttachSelf is needed on the nrepl server if you want the mcp-server eval tool
 ;; to be able to interrupt long running evals

@@ -181,11 +181,10 @@
                     (if (get-in connection-manager [:connections port])
                       (clj-result-k [(format "Connection already exists on port %d" port)] true)
                       (do
-                        ;; This is a read-only implementation
-                        ;; In a full implementation, this would actually add the connection
-                        (clj-result-k [(format "Would add connection: Port %d (%s) - %s" 
-                                               port (name conn-type) description)
-                                       "Note: This is a read-only implementation. Full functionality requires mutable connection manager."] false))))
+                        (clj-result-k [(format "Adding connection: Port %d (%s) - %s" 
+                                               port (name conn-type) description)]
+                                      false)
+                        (conn-mgr/add-connection-to-manager connection-manager primary-client-atom config core/create-additional-connection))))
                   
                   ;; Legacy single-connection format
                   (instance? clojure.lang.Atom server-state)

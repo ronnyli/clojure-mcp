@@ -84,13 +84,8 @@
   :dev-mcp-multi     
   {:extra-deps {ch.qos.logback/logback-classic {:mvn/version "1.4.14"}}
    :extra-paths ["dev" "test"]
-   :exec-fn clojure-mcp.main/start-mcp-server
-   :exec-args {:connections {7888 {:port 7888 :type :clojure :default true 
-                                   :description "Primary Clojure REPL"}
-                             7889 {:port 7889 :type :cljs 
-                                   :description "ClojureScript REPL"}
-                             7890 {:port 7890 :type :clojure 
-                                   :description "Test environment"}}}}
+   :exec-fn clojure-mcp.main/start-mcp-server-with-connection-manager
+   :exec-args {:connections {}}}
 
   :dev-mcp-remote    
   {:extra-deps {ch.qos.logback/logback-classic {:mvn/version "1.4.14"}}

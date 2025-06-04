@@ -338,7 +338,7 @@
     (log/info "Additional connections:" (keys additional-configs))
     
     ;; Create primary connection using existing function
-    (let [primary-client-map (create-and-start-nrepl-connection primary-config)
+    (let [primary-client-map (some-> primary-config (create-and-start-nrepl-connection))
           primary-client-atom (atom primary-client-map)
           
           ;; Create connection manager with primary connection

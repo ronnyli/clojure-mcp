@@ -96,7 +96,7 @@
     [false "Connections must be a map"]
     
     (empty? connections)
-    [false "At least one connection must be specified"]
+    [true nil]
     
     :else
     (let [ports (keys connections)
