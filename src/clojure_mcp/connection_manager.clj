@@ -5,20 +5,14 @@
 
 (defn create-connection-manager
   "Creates a connection manager with a primary connection.
-   
-   Parameters:
-   - primary-client-map: The primary nREPL client map
-   
-   Returns a connection manager with the primary connection registered."
-  [primary-client-map]
-  (let [primary-port (get-in primary-client-map [:clojure-mcp.config/config :port] 7888)]
-    {:connections {primary-port {:client-map primary-client-map
-                                :port primary-port
-                                :status :connected
-                                :type :clojure
-                                :default true
-                                :description "Primary connection"}}
-     :default-port primary-port}))
+
+   Returns a connection manager that looks like
+   {:connections {port {:client-map primary-client-map
+                        :port port
+                        :default true
+                        :description \"Stagehand staging connection\"}}}"
+  []
+  {:connections {}})
 
 (defn add-connection-to-manager
   "Adds a new connection to the connection manager using the existing create-additional-connection function.
@@ -30,7 +24,7 @@
    - create-additional-connection-fn: Function to create additional connections
    
    Returns updated connection manager."
-  [connection-manager primary-client-atom connection-config create-additional-connection-fn]
+  [connection-manager connection-config create-additional-connection-fn]
   (let [port (:port connection-config)
         conn-type (:type connection-config :clojure)
         default? (:default connection-config false)
@@ -40,7 +34,7 @@
     
     (try
       ;; Use the provided create-additional-connection function
-      (let [new-client-map (create-additional-connection-fn primary-client-atom connection-config)
+      (let [new-client-map (create-additional-connection-fn connection-config)
             connection-entry {:client-map new-client-map
                              :port port
                              :status :connected

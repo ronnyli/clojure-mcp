@@ -150,11 +150,8 @@
   [config]
   (let [port (:port config)
         connection-config (-> config
-                            (dissoc :port)
                             (assoc :port port
-                                   :type :clojure
-                                   :default true
-                                   :description "Migrated from legacy config"))]
+                                   :description "Default connection"))]
     {:connections {port connection-config}}))
 
 (defn preserve-shadow-config-pattern
@@ -220,24 +217,4 @@
     
     :else
     (throw (ex-info "Unrecognized config format" {:config config}))))
-
-(defn get-primary-connection-config
-  "Gets the primary connection config from a normalized multi-connection config.
-   
-   Returns the connection config marked as default, or the first one if none marked."
-  [normalized-config]
-  (let [connections (:connections normalized-config)
-        default-connection (first (filter #(:default (second %)) connections))
-        first-connection (first connections)]
-    (second (or default-connection first-connection))))
-
-(defn get-additional-connections-config
-  "Gets additional (non-primary) connection configs from a normalized multi-connection config.
-   
-   Returns a map of {port -> connection-config} for non-primary connections."
-  [normalized-config]
-  (let [connections (:connections normalized-config)
-        primary-config (get-primary-connection-config normalized-config)
-        primary-port (:port primary-config)]
-    (into {} (filter #(not= primary-port (first %)) connections))))
 
